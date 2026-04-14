@@ -11,7 +11,7 @@ The lab is organized into a modular hierarchy mirroring the Polkadot SDK's archi
   - **`runtime`**: The State Transition Function (STF) managing the world state and deterministic state roots.
   - **`consensus`**: Slot-based leadership (BABE approximation) and Longest-Chain fork selection.
   - **`node`**: The actor implementation responsible for block import, proposal, and chain re-orgs.
-- **`network/`**: A discrete-event message simulator modeling propagation latency and discrete slots.
+- **`network/`**: A discrete-event P2P gossip simulator modeling propagation latency, neighbor topology, and multi-hop flood control.
 
 ## Technology Stack
 
@@ -21,11 +21,11 @@ The lab is organized into a modular hierarchy mirroring the Polkadot SDK's archi
 
 ## Verification
 
-The lab includes a rigorous test suite and a real-time simulation orchestrator.
+The code includes a rigorous test suite and a real-time simulation orchestrator.
 
 ### Unit Tests
 
-Verify the mathematical and logical integrity of the codec and STF:
+Verify the mathematical and logical integrity of the codec, STF, and P2P gossip engine:
 
 ```bash
 cargo test

@@ -2,7 +2,6 @@ use crate::primitives::types::{Header, Slot};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
-/// The consensus engine implementing a slot-based probabilistic lottery.
 pub struct Consensus {
     pub validator_id: String,
     pub threshold: u64,
@@ -16,10 +15,9 @@ impl Consensus {
         }
     }
 
-    /// Verifies if the validator has won the authorship rights for a given slot.
+    /// Probabilistic slot leadership lottery.
     ///
-    /// // NOTE: This is a simplified VRF approximation. In production BABE, 
-    /// // this would involve a cryptographic proof of the leader's winning index.
+    /// NOTE: Simplified VRF approximation for research purposes.
     pub fn claim_slot(&self, slot: Slot, randomness: [u8; 32]) -> bool {
         let mut seed = [0u8; 32];
         let id_bytes = self.validator_id.as_bytes();
@@ -32,11 +30,9 @@ impl Consensus {
         val < self.threshold
     }
 
-    /// Identifies the canonical chain tip from a set of observed headers.
+    /// Selects the canonical tip using the Longest Chain rule.
     ///
-    /// IMPLEMENTATION: Uses the "Longest Chain" rule (Best Height).
-    /// // FIXME: Update to GHOST-based recursive weight calculation for 
-    /// // stronger stability under high fork density.
+    /// TIE-BREAKING: Favors earlier slots for height-identical forks.
     pub fn find_best_head<'a>(&self, headers: &'a [Header]) -> Option<&'a Header> {
         headers.iter().max_by_key(|h| (h.number, -(h.slot as i64)))
     }

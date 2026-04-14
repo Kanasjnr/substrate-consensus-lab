@@ -3,10 +3,7 @@ use scale_info::TypeInfo;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// A 32-byte hash identifying protocol entities.
-///
-/// Uses Blake3 for performance and collision resistance. 
-/// SCALE-compatible for wire-ready transmission.
+/// Fixed-size cryptographic identifier.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Encode, Decode, TypeInfo, Serialize, Deserialize)]
 pub struct Hash([u8; 32]);
 
@@ -40,46 +37,36 @@ impl fmt::Display for Hash {
 pub type Slot = u64;
 pub type BlockNumber = u64;
 
-/// The block header, representing the cryptographic link in the chain.
+/// Cryptographic header anchoring the chain state.
 ///
-/// INVARIANT: The `state_root` must represent the Post-Execution state 
-/// of the world after all extrinsics in the block are processed.
+/// SAFETY: state_root must represent the post-execution state trie commitment.
 #[derive(Debug, Clone, Encode, Decode, TypeInfo, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Header {
-    /// Hash of the immediate parent block.
     pub parent_hash: Hash,
-    /// Absolute height of the block.
     #[codec(compact)]
     pub number: BlockNumber,
-    /// Cryptographic commitment to the post-execution state.
     pub state_root: Hash,
-    /// Commitment to the set of extrinsics contained in the body.
     pub extrinsics_root: Hash,
-    /// The discrete time unit this block claims to be authored in.
     pub slot: Slot,
-    /// Identifying string for authorship. 
-    /// // TODO: Replace with AccountId32 and Sr25519 signature for production fidelity.
     pub author: String,
 }
 
 impl Header {
-    /// Compute the Blake3 hash of the SCALE-encoded header.
+    /// Generic Blake3 hashing of the SCALE-encoded header.
     pub fn hash(&self) -> Hash {
         let bytes = self.encode();
         Hash::from_bytes(blake3::hash(&bytes).into())
     }
 }
 
-/// Domain-specific transactions (extrinsics).
-///
-/// Includes both state-mutating system calls and simple transfers.
+/// Domain-specific extrinsics.
 #[derive(Debug, Clone, Encode, Decode, TypeInfo, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Extrinsic {
     Transfer { from: String, to: String, amount: u64 },
     SetState { key: Vec<u8>, value: Vec<u8> },
 }
 
-/// A protocol-level container bundling proof (header) and data (body).
+/// Binary container for header and opaque extrinsic payload.
 #[derive(Debug, Clone, Encode, Decode, TypeInfo, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Block {
     pub header: Header,
@@ -92,7 +79,6 @@ impl Block {
     }
 }
 
-/// Hex utilities for protocol diagnostics.
 mod hex {
     pub fn encode(bytes: [u8; 32]) -> String {
         let mut s = String::with_capacity(64);

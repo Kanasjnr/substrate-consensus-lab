@@ -3,22 +3,21 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use parity_scale_codec::Encode;
 
-/// The canonical world state, modeled as a sorted key-value store.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Encode)]
 pub struct State(pub BTreeMap<Vec<u8>, Vec<u8>>);
 
 impl State {
-    /// Commits the current world state to a unique Blake3 hash.
+    /// Commits world state to a unique Blake3 hash.
     /// 
     /// INVARIANT: BTreeMap's sorted nature ensures SCALE encoding 
-    /// results in a perfectly deterministic root across all nodes.
+    /// results in a deterministic root across all nodes.
     pub fn root(&self) -> Hash {
         let bytes = self.encode();
         Hash::from_bytes(blake3::hash(&bytes).into())
     }
 }
 
-/// The State Transition Function (STF) orchestrator.
+/// State Transition Function (STF).
 pub struct Runtime {
     pub state: State,
 }
@@ -30,9 +29,9 @@ impl Runtime {
         }
     }
 
-    /// Transitions the world state by executing a transaction.
+    /// Mutates the world state based on extrinsic payload.
     ///
-    /// // NOTE: This is an atomic operation within our discrete simulation.
+    /// SAFETY: Atomic operation within the discrete simulation slot.
     pub fn execute_transaction(&mut self, extrinsic: Extrinsic) {
         match extrinsic {
             Extrinsic::SetState { key, value } => {
@@ -63,7 +62,6 @@ impl Runtime {
     }
 }
 
-/// // TODO: Replace bincode with native SCALE u64 compact encoding for full Parity fidelity.
 fn bincode_serialize(val: u64) -> Vec<u8> {
     val.to_le_bytes().to_vec()
 }
