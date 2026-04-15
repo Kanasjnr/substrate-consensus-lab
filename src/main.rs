@@ -3,6 +3,7 @@ pub mod core;
 pub mod network;
 
 use crate::core::node::Node;
+
 use crate::network::network::{NetworkSimulator, Message};
 
 fn main() {
@@ -15,6 +16,7 @@ fn main() {
     let consensus_threshold = u64::MAX / 3;
 
     let mut simulator_network = NetworkSimulator::new(hop_latency);
+    let mut metrics = crate::core::metrics::SimMetrics::new(total_slots, 3);
     
     // Topology Setup: Line (0 --- 1 --- 2)
     let node_ids = vec!["node_0".to_string(), "node_1".to_string(), "node_2".to_string()];
@@ -34,34 +36,53 @@ fn main() {
     for slot in 1..=total_slots {
         log::info!("---------------- Slot {} ----------------", slot);
         
+        // Partition Logic 
+        if slot == 5 {
+            log::warn!("!!! NETWORK PARTITION: Severing connection between node_1 and node_2 !!!");
+            simulator_network.disconnect("node_1", "node_2");
+        }
+        if slot == 15 {
+            log::warn!("!!! NETWORK HEALED: Restoring connection between node_1 and node_2 !!!");
+            simulator_network.connect("node_1", "node_2");
+        }
+
         randomness[0] = (slot % 256) as u8;
 
+        let mut authors_this_slot = 0;
+
         for node in nodes.iter_mut() {
-            // 1. Ingress: Poll network for arrived messages
+            // Poll network for arrived messages
             let messages = simulator_network.poll_ingress(&node.id, slot);
             for msg in messages {
                 match msg {
                     Message::Block(b) => {
                         let hash = b.hash();
-                        // import_block returns true only if the block is new to this node.
                         if node.import_block(b.clone()) {
                             log::debug!("[{}] 📥 Discovered new block: {}. Gossiping to neighbors.", node.id, hash);
-                            // Recursive Propagation: Gossip to neighbors (Flood protection handled by seen_blocks)
-                            simulator_network.gossip_send(&node.id, Message::Block(b), slot);
+                            simulator_network.gossip_send(&node.id, Message::Block(b), slot as u64);
                         }
                     }
                     _ => {}
                 }
             }
 
-            // 2. Authorship: Attempt to propose a new block candidate
+            // Attempt to propose a new block candidate
             if let Some(block) = node.propose_block(slot, randomness) {
                 log::info!("[{}] ⚡ Authored block at height {} (hash: {})", 
                     node.id, block.header.number, block.hash());
                 
+                // Track Authorship Metrics
+                metrics.record_authorship();
+                metrics.update_max_height(block.header.number);
+                authors_this_slot += 1;
+                
                 // Initial Propagation
-                simulator_network.gossip_send(&node.id, Message::Block(block), slot);
+                simulator_network.gossip_send(&node.id, Message::Block(block), slot as u64);
             }
+        }
+
+        if authors_this_slot > 1 {
+            metrics.record_collision();
         }
     }
 
@@ -69,5 +90,8 @@ fn main() {
     for node in nodes {
         log::info!("Node {} canonical head: {} (Blocks discovered: {})", 
             node.id, node.best_head_hash, node.blocks.len());
+        metrics.record_final_state(node.id.clone(), node.best_height());
     }
+
+    metrics.report();
 }

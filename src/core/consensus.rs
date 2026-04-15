@@ -18,7 +18,7 @@ impl Consensus {
     /// Probabilistic slot leadership lottery.
     ///
     /// NOTE: Simplified VRF approximation for research purposes.
-    pub fn claim_slot(&self, slot: Slot, randomness: [u8; 32]) -> bool {
+    pub fn claim_slot(&self, _slot: Slot, randomness: [u8; 32]) -> bool {
         let mut seed = [0u8; 32];
         let id_bytes = self.validator_id.as_bytes();
         let len = id_bytes.len().min(16);

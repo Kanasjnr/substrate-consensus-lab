@@ -68,6 +68,21 @@ impl NetworkSimulator {
         }
         messages
     }
+
+    /// Sever a bidirectional connection between two nodes.
+    pub fn disconnect(&mut self, a: &str, b: &str) {
+        if let Some(peers) = self.neighbors.get_mut(a) {
+            peers.retain(|p| p != b);
+        }
+        if let Some(peers) = self.neighbors.get_mut(b) {
+            peers.retain(|p| p != a);
+        }
+    }
+
+    /// Re-establish a bidirectional connection.
+    pub fn connect(&mut self, a: &str, b: &str) {
+        self.add_neighbor(a, b);
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -115,5 +130,21 @@ mod tests {
         // B should receive the block at Slot 2
         let messages = sim.poll_ingress("B", 2);
         assert_eq!(messages.len(), 1);
+    }
+
+    #[test]
+    fn test_dynamic_topology() {
+        let mut sim = NetworkSimulator::new(1);
+        sim.register_node("A".to_string());
+        sim.register_node("B".to_string());
+        sim.add_neighbor("A", "B");
+        assert!(sim.neighbors.get("A").unwrap().contains(&"B".to_string()));
+
+        sim.disconnect("A", "B");
+        assert!(sim.neighbors.get("A").unwrap().is_empty());
+        assert!(sim.neighbors.get("B").unwrap().is_empty());
+
+        sim.connect("A", "B");
+        assert!(sim.neighbors.get("A").unwrap().contains(&"B".to_string()));
     }
 }

@@ -39,6 +39,13 @@ Run the multi-node consensus simulation with structured logging:
 RUST_LOG=info cargo run
 ```
 
+## Model & Assumptions
+
+1. **Network Topology**: Nodes communicate over a modeled P2P layer with defined discrete hop latency.
+2. **Consensus Algorithm**: A threshold-based probabilistic leadership model approximating BABE (Blind Assignment for Blockchain Extension).
+3. **Fork Choice**: Recursive longest-chain rule. Ties are resolved by arrival sequence.
+4. **Partition Tolerance**: The system is designed to simulate network splits and evaluate convergence latency post-heal.
+
 ## Invariants & Design Philosophy
 
 _This repository is part of a protocol engineering research initiative._
@@ -46,5 +53,3 @@ _This repository is part of a protocol engineering research initiative._
 1. **High Fidelity**: If the logic is written here, it should be representationally accurate enough to port into a real Substrate Pallet.
 2. **Determinism**: Every run with the same seed must result in identical state roots and chain branches across all simulated nodes.
 3. **Research First**: The focus is on "breaking" the protocol via latency and partitions to study recovery and convergence.
-
-_This repository is part of a protocol engineering research initiative._

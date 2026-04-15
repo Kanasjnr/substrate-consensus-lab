@@ -11,6 +11,8 @@ pub struct Node {
     /// SAFETY: primary flood-control invariant for P2P gossip.
     pub seen_blocks: HashSet<Hash>,
     pub best_head_hash: Hash,
+    pub proposed_blocks: u64,
+    pub imported_blocks: u64,
 }
 
 impl Node {
@@ -42,6 +44,8 @@ impl Node {
             blocks,
             seen_blocks,
             best_head_hash: genesis_hash,
+            proposed_blocks: 0,
+            imported_blocks: 0,
         }
     }
 
@@ -57,6 +61,7 @@ impl Node {
 
         self.seen_blocks.insert(hash);
         self.blocks.insert(hash, block);
+        self.imported_blocks += 1;
         self.reorg_chain();
         true
     }
@@ -95,11 +100,19 @@ impl Node {
             self.blocks.insert(hash, block.clone());
             self.seen_blocks.insert(hash);
             self.best_head_hash = hash;
+            self.proposed_blocks += 1;
             
             Some(block)
         } else {
             None
         }
+    }
+
+    /// Returns the height of the current canonical head.
+    pub fn best_height(&self) -> u64 {
+        self.blocks.get(&self.best_head_hash)
+            .map(|b| b.header.number)
+            .unwrap_or(0)
     }
 }
 
