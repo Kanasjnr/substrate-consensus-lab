@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use crate::primitives::types::Hash;
 
 pub struct SimMetrics {
     pub total_slots: u64,
@@ -7,6 +8,10 @@ pub struct SimMetrics {
     pub max_height_achieved: u64,
     pub slot_collisions: u64,
     pub node_final_heights: HashMap<String, u64>,
+    /// Slot at which the most-recently-opened, unresolved fork began.
+    open_fork_slot: Option<u64>,
+    /// Recorded convergence latencies (in slots) for each resolved fork.
+    convergence_latencies: Vec<u64>,
 }
 
 impl SimMetrics {
@@ -18,6 +23,8 @@ impl SimMetrics {
             max_height_achieved: 0,
             slot_collisions: 0,
             node_final_heights: HashMap::new(),
+            open_fork_slot: None,
+            convergence_latencies: Vec::new(),
         }
     }
 
@@ -25,13 +32,31 @@ impl SimMetrics {
         self.total_blocks_authored += 1;
     }
 
-    pub fn record_collision(&mut self) {
+    /// Records a slot collision and marks the fork as open.
+    pub fn record_collision(&mut self, slot: u64) {
         self.slot_collisions += 1;
+        // Only open a new fork window if one isn't already open.
+        if self.open_fork_slot.is_none() {
+            self.open_fork_slot = Some(slot);
+        }
     }
 
     pub fn update_max_height(&mut self, height: u64) {
         if height > self.max_height_achieved {
             self.max_height_achieved = height;
+        }
+    }
+
+    /// Called every slot with the current canonical heads of all live nodes.
+    /// If all heads agree and a fork was open, the convergence latency is sampled.
+    pub fn observe_convergence(&mut self, current_slot: u64, heads: &[Hash]) {
+        if let Some(fork_start) = self.open_fork_slot {
+            let all_agree = heads.windows(2).all(|w| w[0] == w[1]);
+            if all_agree && !heads.is_empty() {
+                let latency = current_slot.saturating_sub(fork_start);
+                self.convergence_latencies.push(latency);
+                self.open_fork_slot = None;
+            }
         }
     }
 
@@ -42,6 +67,12 @@ impl SimMetrics {
     pub fn report(&self) {
         let inefficiency = (self.total_blocks_authored as f32 / self.max_height_achieved as f32) - 1.0;
         let fork_density = self.slot_collisions as f32 / self.total_slots as f32;
+        let avg_convergence = if self.convergence_latencies.is_empty() {
+            f32::NAN
+        } else {
+            self.convergence_latencies.iter().sum::<u64>() as f32
+                / self.convergence_latencies.len() as f32
+        };
 
         println!("\n========================================================");
         println!("  SUBSTRATE CONSENSUS LAB: RESEARCH REPORT ");
@@ -55,10 +86,16 @@ impl SimMetrics {
         println!("- Total Blocks Authored:   {}", self.total_blocks_authored);
         println!("- Max Chain Height:        {}", self.max_height_achieved);
         println!("- Slot Collisions (Forks): {}", self.slot_collisions);
+        println!("- Forks Resolved:          {}", self.convergence_latencies.len());
         println!("\nPROTOCOL IMPLICATIONS:");
         println!("- Chain Inefficiency:      {:.2}% (wasted work)", inefficiency * 100.0);
         println!("- Fork Density:            {:.2} forks/slot", fork_density);
-        println!("- State Divergence:        {} nodes at max height", 
+        if avg_convergence.is_nan() {
+            println!("- Avg Convergence Latency: N/A (no forks resolved)");
+        } else {
+            println!("- Avg Convergence Latency: {:.2} slots/fork", avg_convergence);
+        }
+        println!("- State Divergence:        {} nodes at max height",
             self.node_final_heights.values().filter(|&&h| h == self.max_height_achieved).count());
         println!("========================================================\n");
     }

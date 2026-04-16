@@ -82,8 +82,13 @@ fn main() {
         }
 
         if authors_this_slot > 1 {
-            metrics.record_collision();
+            metrics.record_collision(slot as u64);
         }
+
+        // After all proposals and imports for this slot, observe whether all nodes
+        // have converged on the same canonical head (convergence latency tracking).
+        let heads: Vec<_> = nodes.iter().map(|n| n.best_head_hash).collect();
+        metrics.observe_convergence(slot as u64, &heads);
     }
 
     log::info!("Simulation complete.");
