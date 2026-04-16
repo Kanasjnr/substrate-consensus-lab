@@ -3,81 +3,81 @@ pub mod core;
 pub mod network;
 
 use crate::core::node::Node;
-
+use crate::core::metrics::SimMetrics;
 use crate::network::network::{NetworkSimulator, Message};
 
-fn main() {
-    env_logger::init();
-    log::info!("--- Substrate Consensus Lab: Experimental P2P Simulation ---");
+/// Configures a single simulation run.
+struct SimConfig {
+    label: &'static str,
+    total_slots: u64,
+    hop_latency: u64,
+    consensus_threshold: u64,
+    /// Slot at which the link between node_1 and node_2 is severed.
+    partition_start: u64,
+    /// Slot at which the link is restored. 0 = no heal within the run.
+    partition_end: u64,
+}
 
-    // Simulation Parameters
-    let total_slots = 20;
-    let hop_latency = 1; 
-    let consensus_threshold = u64::MAX / 3;
+fn run_experiment(cfg: SimConfig) -> SimMetrics {
+    println!("\n════════════════════════════════════════════════════════");
+    println!("  EXPERIMENT: {}", cfg.label);
+    println!("  Partition: slots {}–{}", cfg.partition_start, cfg.partition_end);
+    println!("════════════════════════════════════════════════════════");
 
-    let mut simulator_network = NetworkSimulator::new(hop_latency);
-    let mut metrics = crate::core::metrics::SimMetrics::new(total_slots, 3);
-    
-    // Topology Setup: Line (0 --- 1 --- 2)
+    let mut net = NetworkSimulator::new(cfg.hop_latency);
+    let mut metrics = SimMetrics::new(cfg.total_slots, 3);
+
+    // Topology: Line (node_0 -- node_1 -- node_2)
     let node_ids = vec!["node_0".to_string(), "node_1".to_string(), "node_2".to_string()];
     for id in &node_ids {
-        simulator_network.register_node(id.clone());
+        net.register_node(id.clone());
     }
-    simulator_network.add_neighbor("node_0", "node_1");
-    simulator_network.add_neighbor("node_1", "node_2");
+    net.add_neighbor("node_0", "node_1");
+    net.add_neighbor("node_1", "node_2");
 
     let mut nodes: Vec<Node> = node_ids.into_iter()
-        .map(|id| Node::new(id, consensus_threshold))
+        .map(|id| Node::new(id, cfg.consensus_threshold))
         .collect();
 
     let mut randomness = [0u8; 32];
 
-    // Discrete-Event Simulation Loop
-    for slot in 1..=total_slots {
-        log::info!("---------------- Slot {} ----------------", slot);
-        
-        // Partition Logic 
-        if slot == 5 {
-            log::warn!("!!! NETWORK PARTITION: Severing connection between node_1 and node_2 !!!");
-            simulator_network.disconnect("node_1", "node_2");
+    for slot in 1..=cfg.total_slots {
+        // Network partition events
+        if slot == cfg.partition_start {
+            log::warn!("[Slot {}] PARTITION: severing node_1 <-> node_2", slot);
+            net.disconnect("node_1", "node_2");
         }
-        if slot == 15 {
-            log::warn!("!!! NETWORK HEALED: Restoring connection between node_1 and node_2 !!!");
-            simulator_network.connect("node_1", "node_2");
+        if cfg.partition_end > 0 && slot == cfg.partition_end {
+            log::warn!("[Slot {}] HEAL: restoring node_1 <-> node_2", slot);
+            net.connect("node_1", "node_2");
         }
 
         randomness[0] = (slot % 256) as u8;
-
         let mut authors_this_slot = 0;
 
         for node in nodes.iter_mut() {
-            // Poll network for arrived messages
-            let messages = simulator_network.poll_ingress(&node.id, slot);
+            // Drain ingress queue
+            let messages = net.poll_ingress(&node.id, slot);
             for msg in messages {
-                match msg {
-                    Message::Block(b) => {
-                        let hash = b.hash();
-                        if node.import_block(b.clone()) {
-                            log::debug!("[{}] 📥 Discovered new block: {}. Gossiping to neighbors.", node.id, hash);
-                            simulator_network.gossip_send(&node.id, Message::Block(b), slot as u64);
-                        }
+                if let Message::Block(b) = msg {
+                    let hash = b.hash();
+                    if let Some(reorg_depth) = node.import_block(b.clone()) {
+                        log::debug!("[{}] Re-org: old head height was {}", node.id, reorg_depth);
+                        metrics.record_reorg(reorg_depth);
+                        net.gossip_send(&node.id, Message::Block(b), slot as u64);
+                    } else if node.seen_blocks.contains(&hash) {
+                        // Flood-control: already known, do not re-gossip.
                     }
-                    _ => {}
                 }
             }
 
-            // Attempt to propose a new block candidate
+            // Propose
             if let Some(block) = node.propose_block(slot, randomness) {
-                log::info!("[{}] ⚡ Authored block at height {} (hash: {})", 
-                    node.id, block.header.number, block.hash());
-                
-                // Track Authorship Metrics
+                log::info!("[{}] Block at height {} (slot {})", node.id, block.header.number, slot);
                 metrics.record_authorship();
                 metrics.update_max_height(block.header.number);
                 authors_this_slot += 1;
-                
-                // Initial Propagation
-                simulator_network.gossip_send(&node.id, Message::Block(block), slot as u64);
+                net.gossip_send(&node.id, Message::Block(block), slot as u64);
             }
         }
 
@@ -85,18 +85,38 @@ fn main() {
             metrics.record_collision(slot as u64);
         }
 
-        // After all proposals and imports for this slot, observe whether all nodes
-        // have converged on the same canonical head (convergence latency tracking).
         let heads: Vec<_> = nodes.iter().map(|n| n.best_head_hash).collect();
         metrics.observe_convergence(slot as u64, &heads);
     }
 
-    log::info!("Simulation complete.");
-    for node in nodes {
-        log::info!("Node {} canonical head: {} (Blocks discovered: {})", 
-            node.id, node.best_head_hash, node.blocks.len());
+    for node in &nodes {
         metrics.record_final_state(node.id.clone(), node.best_height());
     }
 
     metrics.report();
+    metrics
+}
+
+fn main() {
+    env_logger::init();
+
+    // ── Experiment A: Short partition (5 slots of isolation) ──────────────────
+    run_experiment(SimConfig {
+        label:               "Short Partition (5 slots isolated: slots 15-20)",
+        total_slots:         40,
+        hop_latency:         1,
+        consensus_threshold: u64::MAX / 3,
+        partition_start:     15,
+        partition_end:       20,
+    });
+
+    // ── Experiment B: Long partition (15 slots of isolation) ─────────────────
+    run_experiment(SimConfig {
+        label:               "Long Partition (15 slots isolated: slots 5-20)",
+        total_slots:         40,
+        hop_latency:         1,
+        consensus_threshold: u64::MAX / 3,
+        partition_start:     5,
+        partition_end:       20,
+    });
 }

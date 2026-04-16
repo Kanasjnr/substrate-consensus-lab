@@ -51,27 +51,93 @@ impl Node {
 
     /// Integrates a block into the local DAG.
     ///
-    /// Returns `true` only for previously unobserved blocks. 
+    /// Returns `Some(reorg_depth)` when a chain switch occurs (blocks discarded),
+    /// `None` if the block was already seen or caused no head change.
     /// INVARIANT: Every import triggers a potential tip re-evaluation.
-    pub fn import_block(&mut self, block: Block) -> bool {
+    pub fn import_block(&mut self, block: Block) -> Option<u64> {
         let hash = block.hash();
         if self.seen_blocks.contains(&hash) {
-            return false;
+            return None;
         }
 
         self.seen_blocks.insert(hash);
         self.blocks.insert(hash, block);
         self.imported_blocks += 1;
-        self.reorg_chain();
-        true
+        self.reorg_chain()
     }
 
     /// Evaluates canonical head based on fork-choice rules.
-    fn reorg_chain(&mut self) {
+    ///
+    /// Returns `Some(reorg_depth)` only on a genuine branch switch (re-org):
+    /// when the new best head is NOT a direct descendant of the previous best.
+    /// Returns `None` for normal chain extension or no change.
+    fn reorg_chain(&mut self) -> Option<u64> {
+        let old_hash = self.best_head_hash;
+        let old_height = self.best_height();
         let headers: Vec<Header> = self.blocks.values().map(|b| b.header.clone()).collect();
         if let Some(best) = self.consensus.find_best_head(&headers) {
             self.best_head_hash = best.hash();
         }
+        if self.best_head_hash == old_hash {
+            return None; // No head change.
+        }
+
+        // Determine whether the switch is a simple extension (parent == old_hash)
+        // or a genuine branch switch (re-org).
+        let is_direct_extension = self.blocks
+            .get(&self.best_head_hash)
+            .map(|b| b.header.parent_hash == old_hash)
+            .unwrap_or(false);
+
+        if is_direct_extension {
+            None
+        } else {
+            // Genuine branch switch: calculate depth to common ancestor.
+            let ancestor_hash = self.find_common_ancestor(old_hash, self.best_head_hash);
+            let ancestor_height = self.blocks.get(&ancestor_hash)
+                .map(|b| b.header.number)
+                .unwrap_or(0);
+            
+            // Depth is the number of blocks on the old chain that were discarded.
+            Some(old_height.saturating_sub(ancestor_height))
+        }
+    }
+
+    /// Walks back the DAG starting from two hashes until a common ancestor is reached.
+    /// INVARIANT: Genesis is the ultimate fallback (parent_hash == Hash::zero()).
+    fn find_common_ancestor(&self, mut h1: Hash, mut h2: Hash) -> Hash {
+        let mut path1 = vec![h1];
+        let mut path2 = vec![h2];
+
+        // Walk h1 back to genesis
+        while h1 != Hash::zero() {
+            if let Some(b) = self.blocks.get(&h1) {
+                h1 = b.header.parent_hash;
+                path1.push(h1);
+            } else {
+                break;
+            }
+        }
+
+        // Walk h2 back to genesis
+        while h2 != Hash::zero() {
+            if let Some(b) = self.blocks.get(&h2) {
+                h2 = b.header.parent_hash;
+                path2.push(h2);
+            } else {
+                break;
+            }
+        }
+
+        // Find first intersection
+        let set1: HashSet<Hash> = path1.into_iter().collect();
+        for hash in path2 {
+            if set1.contains(&hash) {
+                return hash;
+            }
+        }
+
+        Hash::zero() // Should never happen in a connected DAG.
     }
 
     /// Authors a new block candidate for the target slot.

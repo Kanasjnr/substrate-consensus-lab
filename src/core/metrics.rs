@@ -12,6 +12,8 @@ pub struct SimMetrics {
     open_fork_slot: Option<u64>,
     /// Recorded convergence latencies (in slots) for each resolved fork.
     convergence_latencies: Vec<u64>,
+    /// Re-org depths recorded on import-triggered chain switches.
+    reorg_depths: Vec<u64>,
 }
 
 impl SimMetrics {
@@ -25,6 +27,7 @@ impl SimMetrics {
             node_final_heights: HashMap::new(),
             open_fork_slot: None,
             convergence_latencies: Vec::new(),
+            reorg_depths: Vec::new(),
         }
     }
 
@@ -45,6 +48,11 @@ impl SimMetrics {
         if height > self.max_height_achieved {
             self.max_height_achieved = height;
         }
+    }
+
+    /// Records the depth (old head height) of a re-org triggered by block import.
+    pub fn record_reorg(&mut self, old_head_height: u64) {
+        self.reorg_depths.push(old_head_height);
     }
 
     /// Called every slot with the current canonical heads of all live nodes.
@@ -73,6 +81,7 @@ impl SimMetrics {
             self.convergence_latencies.iter().sum::<u64>() as f32
                 / self.convergence_latencies.len() as f32
         };
+        let max_reorg_depth = self.reorg_depths.iter().copied().max().unwrap_or(0);
 
         println!("\n========================================================");
         println!("  SUBSTRATE CONSENSUS LAB: RESEARCH REPORT ");
@@ -87,6 +96,7 @@ impl SimMetrics {
         println!("- Max Chain Height:        {}", self.max_height_achieved);
         println!("- Slot Collisions (Forks): {}", self.slot_collisions);
         println!("- Forks Resolved:          {}", self.convergence_latencies.len());
+        println!("- Re-org Events:           {}", self.reorg_depths.len());
         println!("\nPROTOCOL IMPLICATIONS:");
         println!("- Chain Inefficiency:      {:.2}% (wasted work)", inefficiency * 100.0);
         println!("- Fork Density:            {:.2} forks/slot", fork_density);
@@ -95,6 +105,7 @@ impl SimMetrics {
         } else {
             println!("- Avg Convergence Latency: {:.2} slots/fork", avg_convergence);
         }
+        println!("- Max Re-org Depth:        {} blocks", max_reorg_depth);
         println!("- State Divergence:        {} nodes at max height",
             self.node_final_heights.values().filter(|&&h| h == self.max_height_achieved).count());
         println!("========================================================\n");
