@@ -12,6 +12,7 @@ The lab is organized into a modular hierarchy mirroring the Polkadot SDK's archi
   - **`consensus`**: Slot-based leadership (BABE approximation) and Longest-Chain fork selection.
   - **`node`**: The actor implementation responsible for block import, proposal, and chain re-orgs.
 - **`network/`**: A discrete-event P2P gossip simulator modeling propagation latency, neighbor topology, and multi-hop flood control.
+- **`finality/`**: GRANDPA-lite implementation providing prefix-agreement based finality and safety bounds.
 
 ## Technology Stack
 
@@ -44,7 +45,8 @@ RUST_LOG=info cargo run
 1. **Network Topology**: Nodes communicate over a modeled P2P layer with defined discrete hop latency.
 2. **Consensus Algorithm**: A threshold-based probabilistic leadership model approximating BABE (Blind Assignment for Blockchain Extension).
 3. **Fork Choice**: Recursive longest-chain rule. Ties are resolved by arrival sequence.
-4. **Partition Tolerance**: The system is designed to simulate network splits and evaluate convergence latency post-heal.
+4. **Finality Gadget**: A GRANDPA-lite implementation where nodes broadcast votes for their best head. Blocks are finalized when they amass votes from $\ge 2/3$ of the validator set (Prefix Agreement).
+5. **Partition Tolerance**: The system is designed to simulate network splits and evaluate convergence latency post-heal. It specifically measures if finality prevents long-range re-orgs during recovery.
 
 ## Invariants & Design Philosophy
 
@@ -52,4 +54,5 @@ _This repository is part of a protocol engineering research initiative._
 
 1. **High Fidelity**: If the logic is written here, it should be representationally accurate enough to port into a real Substrate Pallet.
 2. **Determinism**: Every run with the same seed must result in identical state roots and chain branches across all simulated nodes.
-3. **Research First**: The focus is on "breaking" the protocol via latency and partitions to study recovery and convergence.
+3. **Safety First**: Finalized blocks are irreversible. Any fork that attempts to revert past a finalized height is rejected, ensuring deterministic safety even in partitioned environments.
+4. **Research First**: The focus is on "breaking" the protocol via latency and partitions to study recovery and convergence.

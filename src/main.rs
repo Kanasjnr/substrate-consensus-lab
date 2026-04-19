@@ -12,6 +12,7 @@ struct SimConfig {
     total_slots: u64,
     hop_latency: u64,
     consensus_threshold: u64,
+    total_validators: usize,
     /// Slot at which the link between node_1 and node_2 is severed.
     partition_start: u64,
     /// Slot at which the link is restored. 0 = no heal within the run.
@@ -36,7 +37,7 @@ fn run_experiment(cfg: SimConfig) -> SimMetrics {
     net.add_neighbor("node_1", "node_2");
 
     let mut nodes: Vec<Node> = node_ids.into_iter()
-        .map(|id| Node::new(id, cfg.consensus_threshold))
+        .map(|id| Node::new(id, cfg.consensus_threshold, cfg.total_validators))
         .collect();
 
     let mut randomness = [0u8; 32];
@@ -59,15 +60,23 @@ fn run_experiment(cfg: SimConfig) -> SimMetrics {
             // Drain ingress queue
             let messages = net.poll_ingress(&node.id, slot);
             for msg in messages {
-                if let Message::Block(b) = msg {
-                    let hash = b.hash();
-                    if let Some(reorg_depth) = node.import_block(b.clone()) {
-                        log::debug!("[{}] Re-org: old head height was {}", node.id, reorg_depth);
-                        metrics.record_reorg(reorg_depth);
-                        net.gossip_send(&node.id, Message::Block(b), slot as u64);
-                    } else if node.seen_blocks.contains(&hash) {
-                        // Flood-control: already known, do not re-gossip.
+                match msg {
+                    Message::Block(b) => {
+                        let hash = b.hash();
+                        if let Some(reorg_depth) = node.import_block(b.clone()) {
+                            log::debug!("[{}] Re-org: old head height was {}", node.id, reorg_depth);
+                            metrics.record_reorg(reorg_depth);
+                            net.gossip_send(&node.id, Message::Block(b), slot as u64);
+                        } else if node.seen_blocks.contains(&hash) {
+                            // Flood-control: already known, do not re-gossip.
+                        }
                     }
+                    Message::GrandpaVote { author, hash } => {
+                        node.handle_grandpa_vote(author.clone(), hash);
+                        // Forward vote to neighbors
+                        net.gossip_send(&node.id, Message::GrandpaVote { author, hash }, slot as u64);
+                    }
+                    _ => {}
                 }
             }
 
@@ -79,6 +88,15 @@ fn run_experiment(cfg: SimConfig) -> SimMetrics {
                 authors_this_slot += 1;
                 net.gossip_send(&node.id, Message::Block(block), slot as u64);
             }
+
+            // Every slot, active nodes broadcast their GRANDPA vote for their best head.
+            let vote = Message::GrandpaVote { 
+                author: node.id.clone(), 
+                hash: node.best_head_hash 
+            };
+            // Node implicitly handles its own vote
+            node.handle_grandpa_vote(node.id.clone(), node.best_head_hash);
+            net.gossip_send(&node.id, vote, slot as u64);
         }
 
         if authors_this_slot > 1 {
@@ -90,7 +108,7 @@ fn run_experiment(cfg: SimConfig) -> SimMetrics {
     }
 
     for node in &nodes {
-        metrics.record_final_state(node.id.clone(), node.best_height());
+        metrics.record_final_state(node.id.clone(), node.best_height(), node.finalized_height);
     }
 
     metrics.report();
@@ -106,6 +124,7 @@ fn main() {
         total_slots:         40,
         hop_latency:         1,
         consensus_threshold: u64::MAX / 3,
+        total_validators:    3,
         partition_start:     15,
         partition_end:       20,
     });
@@ -116,6 +135,18 @@ fn main() {
         total_slots:         40,
         hop_latency:         1,
         consensus_threshold: u64::MAX / 3,
+        total_validators:    3,
+        partition_start:     5,
+        partition_end:       20,
+    });
+
+    // ── Experiment C: Long partition (15 slots) WITH GRANDPA-lite ────────────────
+    run_experiment(SimConfig {
+        label:               "Long Partition WITH FINALITY GADGET (15 slots isolated)",
+        total_slots:         40,
+        hop_latency:         1,
+        consensus_threshold: u64::MAX / 3,
+        total_validators:    3,
         partition_start:     5,
         partition_end:       20,
     });

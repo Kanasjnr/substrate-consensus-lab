@@ -8,6 +8,7 @@ pub struct SimMetrics {
     pub max_height_achieved: u64,
     pub slot_collisions: u64,
     pub node_final_heights: HashMap<String, u64>,
+    pub node_finalized_heights: HashMap<String, u64>,
     /// Slot at which the most-recently-opened, unresolved fork began.
     open_fork_slot: Option<u64>,
     /// Recorded convergence latencies (in slots) for each resolved fork.
@@ -25,6 +26,7 @@ impl SimMetrics {
             max_height_achieved: 0,
             slot_collisions: 0,
             node_final_heights: HashMap::new(),
+            node_finalized_heights: HashMap::new(),
             open_fork_slot: None,
             convergence_latencies: Vec::new(),
             reorg_depths: Vec::new(),
@@ -68,8 +70,9 @@ impl SimMetrics {
         }
     }
 
-    pub fn record_final_state(&mut self, node_id: String, height: u64) {
-        self.node_final_heights.insert(node_id, height);
+    pub fn record_final_state(&mut self, node_id: String, height: u64, finalized_height: u64) {
+        self.node_final_heights.insert(node_id.clone(), height);
+        self.node_finalized_heights.insert(node_id, finalized_height);
     }
 
     pub fn report(&self) {
@@ -108,6 +111,14 @@ impl SimMetrics {
         println!("- Max Re-org Depth:        {} blocks", max_reorg_depth);
         println!("- State Divergence:        {} nodes at max height",
             self.node_final_heights.values().filter(|&&h| h == self.max_height_achieved).count());
+        
+        let max_finalized = self.node_finalized_heights.values().max().copied().unwrap_or(0);
+        println!("- Max Finalized Height:    {} blocks", max_finalized);
+        for id in ["node_0", "node_1", "node_2"] {
+            if let Some(fh) = self.node_finalized_heights.get(id) {
+                println!("  > {} finalized height: {}", id, fh);
+            }
+        }
         println!("========================================================\n");
     }
 }

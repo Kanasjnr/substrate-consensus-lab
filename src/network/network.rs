@@ -5,6 +5,7 @@ use std::collections::{HashMap, VecDeque};
 pub enum Message {
     Block(Block),
     Header(Header),
+    GrandpaVote { author: String, hash: crate::primitives::types::Hash },
 }
 
 

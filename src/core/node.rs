@@ -13,10 +13,17 @@ pub struct Node {
     pub best_head_hash: Hash,
     pub proposed_blocks: u64,
     pub imported_blocks: u64,
+    
+    // GRANDPA-lite state
+    pub supermajority_threshold: usize,
+    pub finalized_hash: Hash,
+    pub finalized_height: u64,
+    /// Maps validator_id -> their most recent vote hash
+    pub grandpa_votes: HashMap<String, Hash>,
 }
 
 impl Node {
-    pub fn new(id: String, threshold: u64) -> Self {
+    pub fn new(id: String, threshold: u64, total_validators: usize) -> Self {
         let mut blocks = HashMap::new();
         let mut seen_blocks = HashSet::new();
         
@@ -37,6 +44,9 @@ impl Node {
         blocks.insert(genesis_hash, genesis_block);
         seen_blocks.insert(genesis_hash);
 
+        // Calculate dynamic supermajority threshold (ceil(2N/3))
+        let supermajority_threshold = (total_validators * 2 + 2) / 3;
+
         Self {
             id: id.clone(),
             runtime: Runtime::new(),
@@ -46,6 +56,58 @@ impl Node {
             best_head_hash: genesis_hash,
             proposed_blocks: 0,
             imported_blocks: 0,
+            supermajority_threshold,
+            finalized_hash: genesis_hash,
+            finalized_height: 0,
+            grandpa_votes: HashMap::new(),
+        }
+    }
+
+    /// Process an incoming GRANDPA vote.
+    pub fn handle_grandpa_vote(&mut self, author: String, hash: Hash) {
+        if self.blocks.contains_key(&hash) {
+            self.grandpa_votes.insert(author, hash);
+            self.try_finalize();
+        }
+    }
+
+    /// Evaluates stored votes for Prefix Agreement.
+    /// In GRANDPA, 2/3 agreement on a block implies agreement on all its ancestors.
+    fn try_finalize(&mut self) {
+        let mut current = self.best_head_hash;
+        
+        // Walk backwards from our best head, checking if any ancestor has amassed 2/3 votes.
+        // We stop once we reach a block that is already finalized, or genesis.
+        while current != Hash::zero() {
+            let height = self.blocks.get(&current).map(|b| b.header.number).unwrap_or(0);
+            
+            if height <= self.finalized_height {
+                break;
+            }
+
+            // Count votes for this block.
+            // A peer's vote counts for `current` if their voted hash is a descendant of `current`
+            // (meaning the common ancestor of their vote and `current` IS `current`).
+            let mut support = 0;
+            for (_, vote_hash) in &self.grandpa_votes {
+                if self.find_common_ancestor(current, *vote_hash) == current {
+                    support += 1;
+                }
+            }
+
+            if support >= self.supermajority_threshold {
+                self.finalized_hash = current;
+                self.finalized_height = height;
+                log::debug!("[{}] Finalized block {} at height {} (votes: {}/{})", 
+                    self.id, current, height, support, self.supermajority_threshold);
+                break; // Found the highest finalized block, no need to check older ones.
+            }
+
+            if let Some(block) = self.blocks.get(&current) {
+                current = block.header.parent_hash;
+            } else {
+                break;
+            }
         }
     }
 
@@ -98,6 +160,15 @@ impl Node {
                 .map(|b| b.header.number)
                 .unwrap_or(0);
             
+            // GRANDPA PREVENTATIVE BOUND
+            // If the fork tries to discard a finalized block, REJECT IT.
+            if ancestor_height < self.finalized_height {
+                log::warn!("[{}] Rejected chain re-org: attempts to revert past finalized height {} (ancestor: {})", 
+                    self.id, self.finalized_height, ancestor_height);
+                self.best_head_hash = old_hash; // Revert tip
+                return None;
+            }
+
             // Depth is the number of blocks on the old chain that were discarded.
             Some(old_height.saturating_sub(ancestor_height))
         }
@@ -188,7 +259,7 @@ mod tests {
 
     #[test]
     fn test_seen_blocks_flood_protection() {
-        let mut node = Node::new("node_0".to_string(), u64::MAX);
+        let mut node = Node::new("node_0".to_string(), u64::MAX, 3);
         
         let header = Header {
             parent_hash: Hash::zero(),
@@ -200,14 +271,19 @@ mod tests {
         };
         let block = Block { header, extrinsics: vec![] };
 
-        assert!(node.import_block(block.clone()));
+        let initial_count = node.imported_blocks;
+        node.import_block(block.clone());
+        assert_eq!(node.imported_blocks, initial_count + 1);
         assert!(node.seen_blocks.contains(&block.hash()));
-        assert!(!node.import_block(block));
+        
+        let count_after_first = node.imported_blocks;
+        node.import_block(block);
+        assert_eq!(node.imported_blocks, count_after_first);
     }
 
     #[test]
     fn test_genesis_already_seen() {
-        let node = Node::new("node_0".to_string(), u64::MAX);
+        let node = Node::new("node_0".to_string(), u64::MAX, 3);
         
         let genesis_header = Header {
             parent_hash: Hash::zero(),
