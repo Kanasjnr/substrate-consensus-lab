@@ -16,11 +16,12 @@ pub struct Node {
     
     // GRANDPA-lite state
     pub supermajority_threshold: usize,
+    pub total_validators: usize,
     pub finalized_hash: Hash,
     pub finalized_height: u64,
-    /// Maps validator_id -> their most recent vote hash
-    pub grandpa_votes: HashMap<String, Hash>,
+    pub precommits_received: Vec<crate::core::grandpa::Precommit>,
 }
+
 
 impl Node {
     pub fn new(id: String, threshold: u64, total_validators: usize) -> Self {
@@ -57,59 +58,98 @@ impl Node {
             proposed_blocks: 0,
             imported_blocks: 0,
             supermajority_threshold,
+            total_validators,
             finalized_hash: genesis_hash,
             finalized_height: 0,
-            grandpa_votes: HashMap::new(),
+            precommits_received: Vec::new(),
         }
     }
 
-    /// Process an incoming GRANDPA vote.
-    pub fn handle_grandpa_vote(&mut self, author: String, hash: Hash) {
-        if self.blocks.contains_key(&hash) {
-            self.grandpa_votes.insert(author, hash);
+    /// Detects if a validator has voted for multiple blocks at the same height.
+    pub fn detect_equivocation(&self, precommit: &crate::core::grandpa::Precommit) -> bool {
+        for existing in &self.precommits_received {
+            if existing.voter_id == precommit.voter_id 
+                && existing.target_height == precommit.target_height 
+                && existing.target_hash != precommit.target_hash 
+            {
+                log::warn!("[{}] ALERT: Equivocation detected from {} at height {}", 
+                    self.id, precommit.voter_id, precommit.target_height);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Process an incoming Precommit.
+    pub fn handle_precommit(&mut self, precommit: crate::core::grandpa::Precommit) {
+        if self.detect_equivocation(&precommit) {
+            // In a production system, we would slash the validator here.
+            return;
+        }
+
+        if self.blocks.contains_key(&precommit.target_hash) {
+            self.precommits_received.push(precommit);
             self.try_finalize();
         }
     }
 
-    /// Evaluates stored votes for Prefix Agreement.
-    /// In GRANDPA, 2/3 agreement on a block implies agreement on all its ancestors.
+    /// Evaluates stored precommits for Prefix Agreement.
     fn try_finalize(&mut self) {
-        let mut current = self.best_head_hash;
-        
-        // Walk backwards from our best head, checking if any ancestor has amassed 2/3 votes.
-        // We stop once we reach a block that is already finalized, or genesis.
-        while current != Hash::zero() {
-            let height = self.blocks.get(&current).map(|b| b.header.number).unwrap_or(0);
-            
-            if height <= self.finalized_height {
-                break;
-            }
+        // Finality moves monotonically up the chain.
+        let mut candidate_height = self.finalized_height + 1;
 
-            // Count votes for this block.
-            // A peer's vote counts for `current` if their voted hash is a descendant of `current`
-            // (meaning the common ancestor of their vote and `current` IS `current`).
-            let mut support = 0;
-            for (_, vote_hash) in &self.grandpa_votes {
-                if self.find_common_ancestor(current, *vote_hash) == current {
-                    support += 1;
+        while let Some(block_hash) = self.find_block_by_height(candidate_height) {
+            let mut vote_count = 0;
+
+            for precommit in &self.precommits_received {
+                // A vote counts for this block if this block is an ancestor of the vote's target
+                if self.find_common_ancestor(block_hash, precommit.target_hash) == block_hash {
+                    vote_count += 1;
                 }
             }
 
-            if support >= self.supermajority_threshold {
-                self.finalized_hash = current;
-                self.finalized_height = height;
-                log::debug!("[{}] Finalized block {} at height {} (votes: {}/{})", 
-                    self.id, current, height, support, self.supermajority_threshold);
-                break; // Found the highest finalized block, no need to check older ones.
-            }
-
-            if let Some(block) = self.blocks.get(&current) {
-                current = block.header.parent_hash;
+            if vote_count >= self.supermajority_threshold {
+                self.finalized_hash = block_hash;
+                self.finalized_height = candidate_height;
+                log::info!("[{}] ✓ FINALIZED block height {} with {} votes", 
+                    self.id, candidate_height, vote_count);
+                candidate_height += 1;
             } else {
                 break;
             }
         }
     }
+
+    pub fn best_height(&self) -> u64 {
+        self.blocks.get(&self.best_head_hash).map(|b| b.header.number).unwrap_or(0)
+    }
+
+    /// Creates a formal Precommit for the node's current best head.
+    pub fn create_precommit(&self, current_slot: crate::primitives::types::Slot) -> crate::core::grandpa::Precommit {
+        crate::core::grandpa::Precommit {
+            target_hash: self.best_head_hash,
+            target_height: self.best_height(),
+            voter_id: self.id.clone(),
+            slot: current_slot,
+        }
+    }
+
+    pub fn find_block_by_height(&self, height: u64) -> Option<Hash> {
+        let mut current = self.best_head_hash;
+        while current != Hash::zero() {
+            if let Some(b) = self.blocks.get(&current) {
+                if b.header.number == height {
+                    return Some(current);
+                }
+                current = b.header.parent_hash;
+            } else {
+                break;
+            }
+        }
+        None
+    }
+
+
 
     /// Integrates a block into the local DAG.
     ///
@@ -176,7 +216,8 @@ impl Node {
 
     /// Walks back the DAG starting from two hashes until a common ancestor is reached.
     /// INVARIANT: Genesis is the ultimate fallback (parent_hash == Hash::zero()).
-    fn find_common_ancestor(&self, mut h1: Hash, mut h2: Hash) -> Hash {
+    pub fn find_common_ancestor(&self, mut h1: Hash, mut h2: Hash) -> Hash {
+
         let mut path1 = vec![h1];
         let mut path2 = vec![h2];
 
@@ -245,12 +286,7 @@ impl Node {
         }
     }
 
-    /// Returns the height of the current canonical head.
-    pub fn best_height(&self) -> u64 {
-        self.blocks.get(&self.best_head_hash)
-            .map(|b| b.header.number)
-            .unwrap_or(0)
-    }
+
 }
 
 #[cfg(test)]

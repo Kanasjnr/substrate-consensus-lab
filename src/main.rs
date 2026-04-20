@@ -71,14 +71,16 @@ fn run_experiment(cfg: SimConfig) -> SimMetrics {
                             // Flood-control: already known, do not re-gossip.
                         }
                     }
-                    Message::GrandpaVote { author, hash } => {
-                        node.handle_grandpa_vote(author.clone(), hash);
-                        // Forward vote to neighbors
-                        net.gossip_send(&node.id, Message::GrandpaVote { author, hash }, slot as u64);
+                    Message::Precommit(precommit) => {
+                        metrics.record_precommit_received();
+                        node.handle_precommit(precommit.clone());
+                        // Forward precommit to neighbors
+                        net.gossip_send(&node.id, Message::Precommit(precommit), slot as u64);
                     }
                     _ => {}
                 }
             }
+
 
             // Propose
             if let Some(block) = node.propose_block(slot, randomness) {
@@ -90,14 +92,19 @@ fn run_experiment(cfg: SimConfig) -> SimMetrics {
             }
 
             // Every slot, active nodes broadcast their GRANDPA vote for their best head.
-            let vote = Message::GrandpaVote { 
-                author: node.id.clone(), 
-                hash: node.best_head_hash 
-            };
-            // Node implicitly handles its own vote
-            node.handle_grandpa_vote(node.id.clone(), node.best_head_hash);
-            net.gossip_send(&node.id, vote, slot as u64);
+            let old_finalized = node.finalized_height;
+            let precommit = node.create_precommit(slot);
+            metrics.record_precommit_broadcast();
+            
+            // Node implicitly handles its own precommit
+            node.handle_precommit(precommit.clone());
+            net.gossip_send(&node.id, Message::Precommit(precommit), slot as u64);
+
+            if node.finalized_height > old_finalized {
+                metrics.record_finalization_round();
+            }
         }
+
 
         if authors_this_slot > 1 {
             metrics.record_collision(slot as u64);

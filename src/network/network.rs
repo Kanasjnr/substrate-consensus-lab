@@ -1,12 +1,15 @@
 use crate::primitives::types::{Block, Header, Slot};
 use std::collections::{HashMap, VecDeque};
 
+use crate::core::grandpa::Precommit;
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Block(Block),
     Header(Header),
-    GrandpaVote { author: String, hash: crate::primitives::types::Hash },
+    Precommit(Precommit),
 }
+
 
 
 pub struct NetworkSimulator {
