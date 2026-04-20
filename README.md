@@ -48,9 +48,25 @@ RUST_LOG=info cargo run
 4. **Finality Gadget**: A GRANDPA-lite implementation where nodes broadcast votes for their best head. Blocks are finalized when they amass votes from $\ge 2/3$ of the validator set (Prefix Agreement).
 5. **Partition Tolerance**: The system is designed to simulate network splits and evaluate convergence latency post-heal. It specifically measures if finality prevents long-range re-orgs during recovery.
 
+## Research & Publications
+
+This simulator has been developed as part of a technical research series on the Substrate consensus model. Each part investigates a different failure mode or safety mechanism:
+
+1. **[The Anatomy of a Fork: Simulating Slot Collisions in Substrate](https://forum.polkadot.network/t/the-anatomy-of-a-fork-simulating-slot-collisions-in-substrate/17514)**  
+   _Investigation into how discrete slot leadership creates unavoidable forks even in ideal network conditions._
+
+2. **[Beyond the Broadcast: Simulating P2P Gossip and Visibility Lag](https://forum.polkadot.network/t/beyond-the-broadcast-simulating-p2p-gossip-and-visibility-lag/17517)**  
+   _Analysis of how network latency and P2P hop counts exacerbate fork persistence and visibility lag._
+
+3. **[Partition-Induced Re-org Depth: A Comparative Study](https://forum.polkadot.network/t/partition-induced-re-org-depth-a-comparative-study-in-a-babe-like-model/17542)**  
+   _Pressure-testing BABE-lite during 15-slot network partitions, observing unbounded re-org growth._
+
+4. **[The Immutable Wall: Bounding Re-org Depth with GRANDPA-lite](https://forum.polkadot.network/t/the-immutable-wall-bounding-re-org-depth-with-grandpa-lite/17572)**  
+   _The conclusion of the series: Implementing prefix agreement to create a non-negotiable safety wall that stops deep re-orgs after recovery._
+
 ## Invariants & Design Philosophy
 
-_This repository is part of a protocol engineering research initiative._
+_This repository is part of a research initiative._
 
 1. **High Fidelity**: If the logic is written here, it should be representationally accurate enough to port into a real Substrate Pallet.
 2. **Determinism**: Every run with the same seed must result in identical state roots and chain branches across all simulated nodes.
