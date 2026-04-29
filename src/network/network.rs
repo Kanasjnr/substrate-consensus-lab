@@ -3,11 +3,14 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::core::grandpa::Precommit;
 
+use crate::primitives::types::Extrinsic;
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Block(Block),
     Header(Header),
     Precommit(Precommit),
+    Extrinsic(Extrinsic),
 }
 
 

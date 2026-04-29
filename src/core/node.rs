@@ -1,7 +1,9 @@
 use crate::primitives::types::{Block, Hash, Header, Slot};
 use crate::core::runtime::Runtime;
 use crate::core::consensus::Consensus;
+use crate::core::tx_pool::TransactionPool;
 use std::collections::{HashMap, HashSet};
+use parity_scale_codec::Encode;
 
 pub struct Node {
     pub id: String,
@@ -13,6 +15,7 @@ pub struct Node {
     pub best_head_hash: Hash,
     pub proposed_blocks: u64,
     pub imported_blocks: u64,
+    pub tx_pool: TransactionPool,
     
     // GRANDPA-lite state
     pub supermajority_threshold: usize,
@@ -57,6 +60,7 @@ impl Node {
             best_head_hash: genesis_hash,
             proposed_blocks: 0,
             imported_blocks: 0,
+            tx_pool: TransactionPool::new(1000),
             supermajority_threshold,
             total_validators,
             finalized_hash: genesis_hash,
@@ -80,16 +84,23 @@ impl Node {
         false
     }
 
-    /// Process an incoming Precommit.
-    pub fn handle_precommit(&mut self, precommit: crate::core::grandpa::Precommit) {
+    /// Process an incoming Precommit. Returns true if it's new.
+    pub fn handle_precommit(&mut self, precommit: crate::core::grandpa::Precommit) -> bool {
+        if self.precommits_received.contains(&precommit) {
+            return false;
+        }
+
         if self.detect_equivocation(&precommit) {
             // In a production system, we would slash the validator here.
-            return;
+            return false;
         }
 
         if self.blocks.contains_key(&precommit.target_hash) {
             self.precommits_received.push(precommit);
             self.try_finalize();
+            true
+        } else {
+            false
         }
     }
 
@@ -161,6 +172,32 @@ impl Node {
         if self.seen_blocks.contains(&hash) {
             return None;
         }
+
+        // --- Extrinsic Execution & Validation ---
+        // In a real system, we'd clone the state or use a state overlay.
+        // For simulation, we mutate the runtime state directly.
+        // If state_root mismatches, it's a BAD block.
+        let old_state = self.runtime.state.clone();
+        for ext in &block.extrinsics {
+            self.runtime.execute_transaction(ext.clone());
+        }
+
+        if self.runtime.state.root() != block.header.state_root {
+            log::warn!("[{}] INVALID BLOCK STATE ROOT: {}", self.id, hash);
+            self.runtime.state = old_state; // Revert
+            return None;
+        }
+
+        // Validate extrinsics root
+        let extrinsics_bytes = block.extrinsics.encode();
+        let expected_extrinsics_root = Hash::from_bytes(blake3::hash(&extrinsics_bytes).into());
+        if expected_extrinsics_root != block.header.extrinsics_root {
+            log::warn!("[{}] INVALID EXTRINSICS ROOT: {}", self.id, hash);
+            self.runtime.state = old_state; // Revert
+            return None;
+        }
+
+        self.tx_pool.remove_mined(&block.extrinsics);
 
         self.seen_blocks.insert(hash);
         self.blocks.insert(hash, block);
@@ -260,18 +297,29 @@ impl Node {
             let parent = self.blocks.get(&self.best_head_hash)
                 .expect("INVARIANT: Canonical head must exist in block database");
             
+            // Reap extrinsics and calculate state/extrinsic roots
+            let extrinsics = self.tx_pool.reap_ready(10);
+            
+            // Apply locally to get the state root
+            for ext in &extrinsics {
+                self.runtime.execute_transaction(ext.clone());
+            }
+
+            let extrinsics_bytes = extrinsics.encode();
+            let extrinsics_root = Hash::from_bytes(blake3::hash(&extrinsics_bytes).into());
+
             let header = Header {
                 parent_hash: self.best_head_hash,
                 number: parent.header.number + 1,
                 state_root: self.runtime.state.root(),
-                extrinsics_root: Hash::zero(),
+                extrinsics_root,
                 slot,
                 author: self.id.clone(),
             };
 
             let block = Block {
                 header,
-                extrinsics: vec![],
+                extrinsics,
             };
             
             let hash = block.hash();
@@ -292,20 +340,25 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parity_scale_codec::Encode;
 
     #[test]
     fn test_seen_blocks_flood_protection() {
         let mut node = Node::new("node_0".to_string(), u64::MAX, 3);
         
+        let empty_extrinsics: Vec<crate::primitives::types::Extrinsic> = vec![];
+        let extrinsics_root = Hash::from_bytes(blake3::hash(&empty_extrinsics.encode()).into());
+        let state_root = node.runtime.state.root();
+
         let header = Header {
             parent_hash: Hash::zero(),
             number: 1,
-            state_root: Hash::zero(),
-            extrinsics_root: Hash::zero(),
+            state_root,
+            extrinsics_root,
             slot: 1,
             author: "A".to_string(),
         };
-        let block = Block { header, extrinsics: vec![] };
+        let block = Block { header, extrinsics: empty_extrinsics };
 
         let initial_count = node.imported_blocks;
         node.import_block(block.clone());
@@ -321,6 +374,8 @@ mod tests {
     fn test_genesis_already_seen() {
         let node = Node::new("node_0".to_string(), u64::MAX, 3);
         
+        // Genesis block in Node::new is created with Hash::zero() for both roots.
+        // It's manually added to seen_blocks. Let's just check it is there.
         let genesis_header = Header {
             parent_hash: Hash::zero(),
             number: 0,

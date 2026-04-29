@@ -62,8 +62,15 @@ impl Header {
 /// Domain-specific extrinsics.
 #[derive(Debug, Clone, Encode, Decode, TypeInfo, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Extrinsic {
-    Transfer { from: String, to: String, amount: u64 },
+    Transfer { from: String, to: String, amount: u64, nonce: u64, fee: u64 },
     SetState { key: Vec<u8>, value: Vec<u8> },
+}
+
+impl Extrinsic {
+    pub fn hash(&self) -> Hash {
+        let bytes = self.encode();
+        Hash::from_bytes(blake3::hash(&bytes).into())
+    }
 }
 
 /// Binary container for header and opaque extrinsic payload.

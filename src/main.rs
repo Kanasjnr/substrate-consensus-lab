@@ -5,6 +5,7 @@ pub mod network;
 use crate::core::node::Node;
 use crate::core::metrics::SimMetrics;
 use crate::network::network::{NetworkSimulator, Message};
+use crate::primitives::types::Extrinsic;
 
 /// Configures a single simulation run.
 struct SimConfig {
@@ -72,10 +73,17 @@ fn run_experiment(cfg: SimConfig) -> SimMetrics {
                         }
                     }
                     Message::Precommit(precommit) => {
-                        metrics.record_precommit_received();
-                        node.handle_precommit(precommit.clone());
-                        // Forward precommit to neighbors
-                        net.gossip_send(&node.id, Message::Precommit(precommit), slot as u64);
+                        if node.handle_precommit(precommit.clone()) {
+                            metrics.record_precommit_received();
+                            net.gossip_send(&node.id, Message::Precommit(precommit), slot as u64);
+                        }
+                    }
+                    Message::Extrinsic(ext) => {
+                        // Attempt to add to local pool
+                        if node.tx_pool.submit(ext.clone()).is_ok() {
+                            // If it's a new valid tx, gossip it further
+                            net.gossip_send(&node.id, Message::Extrinsic(ext), slot as u64);
+                        }
                     }
                     _ => {}
                 }
@@ -157,4 +165,116 @@ fn main() {
         partition_start:     5,
         partition_end:       20,
     });
+
+    // ── Experiment D: Transaction Pool Spam Tester ───────────────────────────────
+    run_experiment_with_tx_spam(SimConfig {
+        label:               "Mempool Adversarial Spam (Pool Capacity Stress)",
+        total_slots:         20,
+        hop_latency:         1,
+        consensus_threshold: u64::MAX / 3,
+        total_validators:    3,
+        partition_start:     0,
+        partition_end:       0,
+    });
+}
+
+fn run_experiment_with_tx_spam(cfg: SimConfig) -> SimMetrics {
+    println!("\n════════════════════════════════════════════════════════");
+    println!("  EXPERIMENT: {}", cfg.label);
+    println!("════════════════════════════════════════════════════════");
+
+    let mut net = NetworkSimulator::new(cfg.hop_latency);
+    let mut metrics = SimMetrics::new(cfg.total_slots, 3);
+
+    let node_ids = vec!["node_0".to_string(), "node_1".to_string(), "node_2".to_string()];
+    for id in &node_ids {
+        net.register_node(id.clone());
+    }
+    net.add_neighbor("node_0", "node_1");
+    net.add_neighbor("node_1", "node_2");
+
+    let mut nodes: Vec<Node> = node_ids.into_iter()
+        .map(|id| Node::new(id, cfg.consensus_threshold, cfg.total_validators))
+        .collect();
+
+    // Give node_0 some initial balance so it can send transactions
+    let node_0_key = format!("balance:{}", "node_0").into_bytes();
+    for node in nodes.iter_mut() {
+        node.runtime.state.0.insert(node_0_key.clone(), 1_000_000u64.to_le_bytes().to_vec());
+    }
+
+    let mut randomness = [0u8; 32];
+    let mut global_nonce = 0;
+
+    for slot in 1..=cfg.total_slots {
+        randomness[0] = (slot % 256) as u8;
+
+        // ADVERSARIAL BEHAVIOR: Node 0 spams the network with transactions
+        if slot % 2 == 0 {
+            for _ in 0..5 {
+                global_nonce += 1;
+                let ext = Extrinsic::Transfer {
+                    from: "node_0".to_string(),
+                    to: "node_1".to_string(),
+                    amount: 10,
+                    nonce: global_nonce,
+                    fee: 1,
+                };
+                nodes[0].tx_pool.submit(ext.clone()).ok();
+                net.gossip_send("node_0", Message::Extrinsic(ext), slot as u64);
+            }
+        }
+
+        for node in nodes.iter_mut() {
+            let messages = net.poll_ingress(&node.id, slot);
+            for msg in messages {
+                match msg {
+                    Message::Block(b) => {
+                        let hash = b.hash();
+                        if let Some(reorg_depth) = node.import_block(b.clone()) {
+                            metrics.record_reorg(reorg_depth);
+                            net.gossip_send(&node.id, Message::Block(b), slot as u64);
+                        }
+                    }
+                    Message::Precommit(precommit) => {
+                        if node.handle_precommit(precommit.clone()) {
+                            metrics.record_precommit_received();
+                            net.gossip_send(&node.id, Message::Precommit(precommit), slot as u64);
+                        }
+                    }
+                    Message::Extrinsic(ext) => {
+                        if node.tx_pool.submit(ext.clone()).is_ok() {
+                            net.gossip_send(&node.id, Message::Extrinsic(ext), slot as u64);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if let Some(block) = node.propose_block(slot, randomness) {
+                log::info!("[{}] Block at height {} with {} txs", node.id, block.header.number, block.extrinsics.len());
+                metrics.record_authorship();
+                metrics.update_max_height(block.header.number);
+                net.gossip_send(&node.id, Message::Block(block), slot as u64);
+            }
+
+            let old_finalized = node.finalized_height;
+            let precommit = node.create_precommit(slot);
+            metrics.record_precommit_broadcast();
+            
+            node.handle_precommit(precommit.clone());
+            net.gossip_send(&node.id, Message::Precommit(precommit), slot as u64);
+
+            if node.finalized_height > old_finalized {
+                metrics.record_finalization_round();
+            }
+        }
+    }
+
+    for node in &nodes {
+        metrics.record_final_state(node.id.clone(), node.best_height(), node.finalized_height);
+    }
+
+    metrics.report();
+    metrics
 }

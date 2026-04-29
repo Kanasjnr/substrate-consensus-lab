@@ -37,7 +37,7 @@ impl Runtime {
             Extrinsic::SetState { key, value } => {
                 self.state.0.insert(key, value);
             }
-            Extrinsic::Transfer { from, to, amount } => {
+            Extrinsic::Transfer { from, to, amount, nonce: _, fee: _ } => {
                 let from_key = format!("balance:{}", from).into_bytes();
                 let to_key = format!("balance:{}", to).into_bytes();
 
@@ -110,6 +110,8 @@ mod tests {
             from: alice.clone(),
             to: bob.clone(),
             amount: 40,
+            nonce: 1,
+            fee: 1,
         });
 
         assert_eq!(runtime.get_read_balance(&format!("balance:{}", alice).into_bytes()), 60);
