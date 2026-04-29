@@ -64,6 +64,9 @@ This simulator has been developed as part of a technical research series on the 
 4. **[The Immutable Wall: Bounding Re-org Depth with GRANDPA-lite](https://forum.polkadot.network/t/the-immutable-wall-bounding-re-org-depth-with-grandpa-lite/17572)**  
    _The conclusion of the series: Implementing prefix agreement to create a non-negotiable safety wall that stops deep re-orgs after recovery._
 
+5. **[Under Pressure: Simulating Mempool Flood Control and State Determinism](https://forum.polkadot.network/t/under-pressure-simulating-mempool-flood-control-and-state-determinism/17618)**  
+   _Shifting focus to the state machine: Proving that simple flood control prevents P2P routing storms, and deterministic state root verification neutralizes malicious block authors._
+
 ## Invariants & Design Philosophy
 
 _This repository is part of a research initiative._
